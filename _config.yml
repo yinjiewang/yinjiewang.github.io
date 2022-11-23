@@ -12,11 +12,11 @@ repository               : "yinjiewang/yinjiewang.github.io"
 google_scholar_stats_use_cdn : true
 
 # google analytics
-google_analytics_id      :  # get google_analytics_id from https://analytics.google.com/analytics/
+google_analytics_id      :  G-XM1XXTQ5XK # get google_analytics_id from https://analytics.google.com/analytics/
 
 # SEO Related
-google_site_verification :  # get google_site_verification from https://search.google.com/search-console/about
-bing_site_verification   :  # get bing_site_verification from https://www.bing.com/webmasters/about
+google_site_verification :  EuS0hTRa9f51grYZ5CMMAJr2wHC9XIyXinlJwKLvNZM # get google_site_verification from https://search.google.com/search-console/about
+bing_site_verification   :  B0E36A05DBFCB3443EDC6593C0DD24A4 # get bing_site_verification from https://www.bing.com/webmasters/about
 baidu_site_verification  :  # get baidu_site_verification from https://ziyuan.baidu.com/login/index?u=/site/index
 
 # Site Author
