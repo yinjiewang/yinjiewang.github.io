@@ -5,7 +5,7 @@
 - *2020.09.04* Outstanding Instructor, The 10th China National College Student “Innovation, Creativity, and Entrepreneurship” Challenge
 - *2018.12.12* Outstanding Mentor, Outstanding Teacher Award of Lanzhou Jiaotong University
 
-## 🏆 Competition Awards
+## 🏆 Competition Awards (Instructor)
 
 - *2022.07.13* **🥈 Gansu Province Silver Prize**, The 8th China International College Students’ ‘Internet+’ Innovation and Entrepreneurship Competition 
 - *2021.07.24* **🥇 Gansu Province Gold Prize**, The 7th China International College Students’ ‘Internet+’ Innovation and Entrepreneurship Competition 
