@@ -1,2 +1,2 @@
 # 🔥 News
-- 
+- Happy New year!
