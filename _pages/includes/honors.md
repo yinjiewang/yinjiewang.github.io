@@ -7,8 +7,9 @@
 
 ## 🏆 Competition Awards (Instructor)
 
-- *2022.07.13* **🥈 Gansu Province Silver Prize**, The 8th China International College Students’ ‘Internet+’ Innovation and Entrepreneurship Competition 
-- *2021.07.24* **🥇 Gansu Province Gold Prize**, The 7th China International College Students’ ‘Internet+’ Innovation and Entrepreneurship Competition 
+- *2023.09.25* **🎖 National Second Prize**, The 18th "Challenge Cup" National College Students' Extracurricular Academic and Technological Works Competition
+- *2022.07.13* **🥈 Gansu Province Silver Prize**, The 8th China International College Students’ ‘Internet+’ Innovation and Entrepreneurship Competition
+- *2021.07.24* **🥇 Gansu Province Gold Prize**, The 7th China International College Students’ ‘Internet+’ Innovation and Entrepreneurship Competition
 - *2021.07.01* **🥈 Gansu Province Second Prize**, The 11th China National College Student “Innovation, Creativity, and Entrepreneurship” Challenge
 - 2021.05.29 **🥇 Gansu Province First Prize**, The 13th “Challenge Cup” National Undergraduate Curricular Academic Science and Technology Works by Race
 - *2020.10.19* **🏅 National Third Prize**, The 14th ‘iCAN’ International Contest of Innovation

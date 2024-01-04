@@ -1,5 +1,7 @@
 # 👨‍🎓👩‍🎓 Outstanding Alumni
 
+- Yikun Li, *Sept.2019 - Jun.2023*<br />Now Graduate Student at Zhejiang University
+  
 - Jianji Li, *Sept.2017 - Jun.2021*<br />
   National Scholarship from Ministry of Education 2019, 2020 (Top 0.2%)<br />
   Outstanding Student of Lanzhou Jiaotong University 2018, 2019, 2020 (Top 1%)<br />
