@@ -17,9 +17,8 @@ jobs:
         git config --local user.name "${GITHUB_ACTOR}"
         # git config --local user.email "${{ secrets.MY_EMAIL }}"  用系统默认变量代替密码变量
         git config --local user.email "${GITHUB_ACTOR}@users.noreply.github.com"
-        # export remote_repo="https://${GITHUB_ACTOR}:${{ secrets.GHRS_GITHUB_API_TOKEN }}@github.com/yinjiewang/yinjiewang.git"  用系统默认变量代替密码变量
-        # 将主页中的部分内容生成MD文件更新到yinjiewang仓库
-        export remote_repo="https://${GITHUB_ACTOR}:${{ secrets.GITHUB_TOKEN }}@github.com/yinjiewang/yinjiewang.git"
+        # 将主页中的部分内容生成MD文件更新到yinjiewang仓库，用系统默认变量代替密码变量,此处使用账户全局的Token，不能使用${{ secrets.GITHUB_TOKEN }}，因${{ secrets.GITHUB_TOKEN }}是当前仓库的Token.
+        export remote_repo="https://${GITHUB_ACTOR}:${{ secrets.GHRS_GITHUB_API_TOKEN }}@github.com/yinjiewang/yinjiewang.git"
         git add README.md
         git add images
         git commit -m "update my description automatically"
