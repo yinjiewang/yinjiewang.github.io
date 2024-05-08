@@ -20,11 +20,12 @@ jobs:
         python3 main.py
         cd ./results
         git init
+        # 用系统默认邮箱和用户名
         git config --local user.name "${GITHUB_ACTOR}"
-        # git config --local user.email "${{ secrets.MY_EMAIL }}" 用系统默认变量代替秘密变量
+        # git config --local user.email "${{ secrets.MY_EMAIL }}"
         git config --local user.email "${GITHUB_ACTOR}@users.noreply.github.com"
         # export remote_repo="https://${GITHUB_ACTOR}:${{ secrets.GHRS_GITHUB_API_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git"  用系统默认变量代替秘密变量
-        export remote_repo="https://${GITHUB_ACTOR}:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git"
+        export remote_repo="https://${GITHUB_ACTOR}:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" #当前仓库所以用secrets.GITHUB_TOKEN
         git add *.json
         git commit -m "Updated Citation Data"
         git push "${remote_repo}" HEAD:google-scholar-stats --force

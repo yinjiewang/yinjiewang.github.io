@@ -14,8 +14,8 @@ jobs:
         cd ./github_myprofile_updater
         python3 update.py
         git init
-        git config --local user.name "${GITHUB_ACTOR}"
-        #不能用系统默认变量邮箱，否则无法提交
+        # 用系统默认邮箱和用户名
+        git config --local user.name "${GITHUB_ACTOR}"       
         git config --local user.email "${GITHUB_ACTOR}@users.noreply.github.com"
         # git config --local user.email "${{ secrets.MY_EMAIL }}"
         # 将主页中的部分内容生成MD文件更新到yinjiewang仓库，用系统默认变量代替密码变量,此处使用账户全局的Token，不能使用${{ secrets.GITHUB_TOKEN }}，因${{ secrets.GITHUB_TOKEN }}是当前仓库的Token.
