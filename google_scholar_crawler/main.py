@@ -3,7 +3,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Set
+from typing import Callable, Dict, Iterable, List, Optional, Set
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
@@ -11,13 +11,17 @@ from bs4 import BeautifulSoup
 
 
 SCHOLAR_URL = "https://scholar.google.com/citations"
+SERPAPI_URL = "https://serpapi.com/search.json"
 PAGE_SIZE = 100
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_PAGES = 5
 
 
-def parse_int(value: str) -> int:
-    match = re.search(r"\d[\d,]*", value or "")
+def parse_int(value) -> int:
+    if isinstance(value, (int, float)):
+        return int(value)
+
+    match = re.search(r"\d[\d,]*", str(value or ""))
     return int(match.group(0).replace(",", "")) if match else 0
 
 
@@ -174,32 +178,147 @@ def fetch_author(
     return author_data
 
 
-def main() -> None:
-    script_dir = Path(__file__).resolve().parent
-    repo_root = script_dir.parent
-    expected_publication_ids = get_expected_publication_ids(repo_root)
-    primary_author_id = os.environ.get("GOOGLE_SCHOLAR_ID", "").strip()
-    author_ids = get_author_ids(primary_author_id, expected_publication_ids)
-    timeout_seconds = int(os.environ.get("GOOGLE_SCHOLAR_TIMEOUT", DEFAULT_TIMEOUT_SECONDS))
-    max_pages = int(os.environ.get("GOOGLE_SCHOLAR_MAX_PAGES", DEFAULT_MAX_PAGES))
+def get_recent_metric(metric: Dict) -> int:
+    for key, value in metric.items():
+        if key != "all":
+            return parse_int(value)
+    return 0
 
-    session = requests.Session()
-    session.headers.update(
-        {
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
+
+def parse_serpapi_cited_by(cited_by: Dict) -> Dict:
+    metrics = {
+        "citedby": 0,
+        "citedby5y": 0,
+        "hindex": 0,
+        "hindex5y": 0,
+        "i10index": 0,
+        "i10index5y": 0,
+    }
+
+    for row in cited_by.get("table", []):
+        for metric_name, metric_value in row.items():
+            if not isinstance(metric_value, dict):
+                continue
+
+            normalized_name = metric_name.lower().replace("-", "_")
+            if "citation" in normalized_name:
+                metrics["citedby"] = parse_int(metric_value.get("all"))
+                metrics["citedby5y"] = get_recent_metric(metric_value)
+            elif "h_index" in normalized_name or normalized_name in {"hindex", "indice_h"}:
+                metrics["hindex"] = parse_int(metric_value.get("all"))
+                metrics["hindex5y"] = get_recent_metric(metric_value)
+            elif "i10" in normalized_name:
+                metrics["i10index"] = parse_int(metric_value.get("all"))
+                metrics["i10index5y"] = get_recent_metric(metric_value)
+
+    return metrics
+
+
+def parse_serpapi_author_response(payload: Dict) -> Dict:
+    metrics = parse_serpapi_cited_by(payload.get("cited_by", {}))
+    publications = {}
+
+    for article in payload.get("articles", []):
+        publication_id = article.get("citation_id") or ""
+        if not publication_id and article.get("link"):
+            query = parse_qs(urlparse(article["link"]).query)
+            publication_id = query.get("citation_for_view", [""])[0]
+        if not publication_id:
+            continue
+
+        publications[publication_id] = {
+            "author_pub_id": publication_id,
+            "bib": {
+                "title": article.get("title", ""),
+                "author": article.get("authors", ""),
+                "venue": article.get("publication", ""),
+                "pub_year": str(article.get("year", "")),
+            },
+            "num_citations": parse_int((article.get("cited_by") or {}).get("value")),
         }
-    )
 
+    return {
+        "name": (payload.get("author") or {}).get("name", ""),
+        "citedby": metrics["citedby"],
+        "citedby5y": metrics["citedby5y"],
+        "hindex": metrics["hindex"],
+        "hindex5y": metrics["hindex5y"],
+        "i10index": metrics["i10index"],
+        "i10index5y": metrics["i10index5y"],
+        "publications": publications,
+    }
+
+
+def fetch_author_with_serpapi(
+    session: requests.Session,
+    author_id: str,
+    expected_publication_ids: Set[str],
+    timeout_seconds: int,
+    max_pages: int,
+    api_key: str,
+) -> Dict:
+    author_data = {
+        "name": "",
+        "citedby": 0,
+        "citedby5y": 0,
+        "hindex": 0,
+        "hindex5y": 0,
+        "i10index": 0,
+        "i10index5y": 0,
+        "publications": {},
+    }
+    expected_for_author = {
+        publication_id
+        for publication_id in expected_publication_ids
+        if publication_id.startswith(f"{author_id}:")
+    }
+
+    for page_index in range(max_pages):
+        response = session.get(
+            SERPAPI_URL,
+            params={
+                "engine": "google_scholar_author",
+                "author_id": author_id,
+                "hl": "en",
+                "num": PAGE_SIZE,
+                "start": page_index * PAGE_SIZE,
+                "sort": "pubdate",
+                "api_key": api_key,
+            },
+            timeout=timeout_seconds,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("error"):
+            raise RuntimeError(f"SerpApi returned an error: {payload['error']}")
+
+        page_data = parse_serpapi_author_response(payload)
+        if page_index == 0:
+            for key in ("name", "citedby", "citedby5y", "hindex", "hindex5y", "i10index", "i10index5y"):
+                author_data[key] = page_data[key]
+
+        page_publications = page_data["publications"]
+        author_data["publications"].update(page_publications)
+
+        if expected_for_author and expected_for_author.issubset(author_data["publications"]):
+            break
+        if len(payload.get("articles", [])) < PAGE_SIZE:
+            break
+
+    return author_data
+
+
+def collect_author_data(
+    author_ids: List[str],
+    expected_publication_ids: Set[str],
+    fetch_author_data: Callable[[str], Dict],
+) -> Dict:
     merged_publications = {}
     primary_data = None
     fetched_authors = {}
 
     for author_id in author_ids:
-        author_data = fetch_author(session, author_id, expected_publication_ids, timeout_seconds, max_pages)
+        author_data = fetch_author_data(author_id)
         fetched_authors[author_id] = {
             key: author_data[key]
             for key in ("name", "citedby", "citedby5y", "hindex", "hindex5y", "i10index", "i10index5y")
@@ -215,7 +334,7 @@ def main() -> None:
     if missing_publications:
         print("Warning: missing expected publication IDs: " + ", ".join(missing_publications))
 
-    output = {
+    return {
         "name": primary_data["name"],
         "citedby": primary_data["citedby"],
         "citedby5y": primary_data["citedby5y"],
@@ -229,6 +348,21 @@ def main() -> None:
         "missing_publications": missing_publications,
     }
 
+
+def load_fallback_data(path_value: str, error: Exception) -> Optional[Dict]:
+    if not path_value:
+        return None
+
+    fallback_path = Path(path_value)
+    if not fallback_path.exists():
+        return None
+
+    print(f"Warning: live citation fetch failed: {error}")
+    print(f"Warning: using previous citation data from {fallback_path}.")
+    return json.loads(fallback_path.read_text(encoding="utf-8"))
+
+
+def write_results(script_dir: Path, output: Dict) -> None:
     results_dir = script_dir / "results"
     results_dir.mkdir(exist_ok=True)
     (results_dir / "gs_data.json").write_text(
@@ -247,6 +381,69 @@ def main() -> None:
         ),
         encoding="utf-8",
     )
+
+
+def main() -> None:
+    script_dir = Path(__file__).resolve().parent
+    repo_root = script_dir.parent
+    expected_publication_ids = get_expected_publication_ids(repo_root)
+    primary_author_id = os.environ.get("GOOGLE_SCHOLAR_ID", "").strip()
+    author_ids = get_author_ids(primary_author_id, expected_publication_ids)
+    timeout_seconds = int(os.environ.get("GOOGLE_SCHOLAR_TIMEOUT", DEFAULT_TIMEOUT_SECONDS))
+    max_pages = int(os.environ.get("GOOGLE_SCHOLAR_MAX_PAGES", DEFAULT_MAX_PAGES))
+    serpapi_key = os.environ.get("SERPAPI_API_KEY", "").strip()
+
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://scholar.google.com/",
+        }
+    )
+
+    try:
+        if serpapi_key:
+            print("Fetching citation data via SerpApi.")
+            output = collect_author_data(
+                author_ids,
+                expected_publication_ids,
+                lambda author_id: fetch_author_with_serpapi(
+                    session,
+                    author_id,
+                    expected_publication_ids,
+                    timeout_seconds,
+                    max_pages,
+                    serpapi_key,
+                ),
+            )
+        else:
+            print("Fetching citation data directly from Google Scholar.")
+            output = collect_author_data(
+                author_ids,
+                expected_publication_ids,
+                lambda author_id: fetch_author(
+                    session,
+                    author_id,
+                    expected_publication_ids,
+                    timeout_seconds,
+                    max_pages,
+                ),
+            )
+    except (requests.RequestException, RuntimeError) as error:
+        output = load_fallback_data(os.environ.get("GOOGLE_SCHOLAR_FALLBACK_JSON", ""), error)
+        if output is None:
+            raise RuntimeError(
+                "Failed to fetch live citation data and no previous gs_data.json fallback is available. "
+                "GitHub-hosted runners are often blocked by Google Scholar with HTTP 403; add SERPAPI_API_KEY "
+                "or make sure the google-scholar-stats branch exists."
+            ) from error
+
+    write_results(script_dir, output)
 
     print(json.dumps(output, ensure_ascii=False, indent=2))
 
