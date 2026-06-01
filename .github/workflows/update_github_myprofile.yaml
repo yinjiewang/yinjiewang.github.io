@@ -1,26 +1,61 @@
 name: Update github myprofile
 
-on: 'page_build'
+on:
+  page_build:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-github-myprofile
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
-    - uses: actions/checkout@v2
-    - name: Install Reqs
-      run: |
-        sudo apt-get install python3-setuptools
-    - name: Run
-      run: |
-        cd ./github_myprofile_updater
-        python3 update.py
-        git init
-        # 用系统默认邮箱和用户名
-        git config --local user.name "${GITHUB_ACTOR}"       
-        git config --local user.email "${GITHUB_ACTOR}@users.noreply.github.com"
-        # git config --local user.email "${{ secrets.MY_EMAIL }}"
-        # 将主页中的部分内容生成MD文件更新到yinjiewang仓库，用系统默认变量代替密码变量,此处使用账户全局的Token，不能使用${{ secrets.GITHUB_TOKEN }}，因${{ secrets.GITHUB_TOKEN }}是当前仓库的Token.
-        export remote_repo="https://${GITHUB_ACTOR}:${{ secrets.GHRS_GITHUB_API_TOKEN }}@github.com/yinjiewang/yinjiewang.git"
-        git add README.md
-        git add images
-        git commit -m "update my description automatically"
-        git push "${remote_repo}" HEAD:main --force
+      - name: Checkout site repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Generate profile README
+        run: python github_myprofile_updater/update.py
+
+      - name: Validate profile repository token
+        run: |
+          if [ -z "${GHRS_GITHUB_API_TOKEN}" ]; then
+            echo "::error::Set GHRS_GITHUB_API_TOKEN to a PAT with Contents read/write access to yinjiewang/yinjiewang."
+            exit 1
+          fi
+        env:
+          GHRS_GITHUB_API_TOKEN: ${{ secrets.GHRS_GITHUB_API_TOKEN }}
+
+      - name: Checkout profile repository
+        uses: actions/checkout@v4
+        with:
+          repository: yinjiewang/yinjiewang
+          token: ${{ secrets.GHRS_GITHUB_API_TOKEN }}
+          path: github_profile_repo
+
+      - name: Update profile repository
+        run: |
+          cp github_myprofile_updater/README.md github_profile_repo/README.md
+          mkdir -p github_profile_repo/images
+          cp -R github_myprofile_updater/images/. github_profile_repo/images/
+          cd github_profile_repo
+          git config user.name "${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git add README.md images
+          if git diff --cached --quiet; then
+            echo "No profile changes to commit."
+            exit 0
+          fi
+          git commit -m "Update profile README"
+          git push
