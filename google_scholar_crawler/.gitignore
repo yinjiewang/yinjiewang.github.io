@@ -1,4 +1,5 @@
 *.json
+!citation_overrides.json
 .DS_Store
 /push.sh
 

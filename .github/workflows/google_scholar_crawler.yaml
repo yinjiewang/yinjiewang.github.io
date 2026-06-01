@@ -44,6 +44,8 @@ jobs:
         env:
           GOOGLE_SCHOLAR_ID: ${{ secrets.GOOGLE_SCHOLAR_ID }}
           GOOGLE_SCHOLAR_FALLBACK_JSON: google_scholar_crawler/previous_results/gs_data.json
+          GOOGLE_SCHOLAR_LIVE_FETCH: "false"
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
 
       - name: Publish citation data branch

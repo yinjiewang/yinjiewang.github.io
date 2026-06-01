@@ -14,10 +14,14 @@
             var citationEles = document.getElementsByClassName('show_paper_citations')
             Array.prototype.forEach.call(citationEles, element => {
                 var paperId = element.getAttribute('data')
+                var fallbackCitations = parseInt(element.getAttribute('data-citations'), 10);
                 if (!data['publications'] || !data['publications'][paperId]) {
                     return;
                 }
-                var numCitations = data['publications'][paperId]['num_citations']
+                var numCitations = parseInt(data['publications'][paperId]['num_citations'], 10);
+                if (!isNaN(fallbackCitations)) {
+                    numCitations = isNaN(numCitations) ? fallbackCitations : Math.max(numCitations, fallbackCitations);
+                }
                 element.innerHTML = '| Citations: ' + numCitations;
             });
         });

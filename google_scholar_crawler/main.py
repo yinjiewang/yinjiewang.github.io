@@ -11,10 +11,12 @@ from bs4 import BeautifulSoup
 
 
 SCHOLAR_URL = "https://scholar.google.com/citations"
+TAVILY_EXTRACT_URL = "https://api.tavily.com/extract"
 SERPAPI_URL = "https://serpapi.com/search.json"
 PAGE_SIZE = 100
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_PAGES = 5
+METRIC_KEYS = ("citedby", "citedby5y", "hindex", "hindex5y", "i10index", "i10index5y")
 
 
 def parse_int(value) -> int:
@@ -25,20 +27,50 @@ def parse_int(value) -> int:
     return int(match.group(0).replace(",", "")) if match else 0
 
 
-def get_expected_publication_ids(repo_root: Path) -> Set[str]:
-    pattern = re.compile(
-        r"class=['\"][^'\"]*show_paper_citations[^'\"]*['\"][^>]*\bdata=['\"]([^'\"]+)['\"]"
-    )
-    publication_ids: Set[str] = set()
+def parse_bool(value: str, default: bool = False) -> bool:
+    if value == "":
+        return default
 
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", value.lower())).strip()
+
+
+def get_expected_publications(repo_root: Path) -> Dict[str, Dict]:
+    publications: Dict[str, Dict] = {}
     includes_dir = repo_root / "_pages" / "includes"
     if not includes_dir.exists():
-        return publication_ids
+        return publications
 
     for markdown_file in includes_dir.glob("*.md"):
-        publication_ids.update(pattern.findall(markdown_file.read_text(encoding="utf-8")))
+        for line in markdown_file.read_text(encoding="utf-8").splitlines():
+            if "show_paper_citations" not in line:
+                continue
 
-    return publication_ids
+            id_match = re.search(r"\bdata=['\"]([^'\"]+)['\"]", line)
+            if not id_match:
+                continue
+
+            publication_id = id_match.group(1)
+            title_match = re.search(r"\[([^\]]+)\]\([^)]+\)", line)
+            citations_match = re.search(r"\bdata-citations=['\"](\d+)['\"]", line)
+
+            publication = publications.setdefault(publication_id, {"author_pub_id": publication_id})
+            if title_match:
+                publication["title"] = title_match.group(1).strip()
+            if citations_match:
+                publication["fallback_citations"] = max(
+                    parse_int(citations_match.group(1)),
+                    parse_int(publication.get("fallback_citations")),
+                )
+
+    return publications
+
+
+def get_expected_publication_ids(repo_root: Path) -> Set[str]:
+    return set(get_expected_publications(repo_root))
 
 
 def get_author_ids(primary_author_id: str, publication_ids: Iterable[str]) -> List[str]:
@@ -164,7 +196,7 @@ def fetch_author(
         page_data = parse_author_page(soup)
 
         if page_index == 0:
-            for key in ("name", "citedby", "citedby5y", "hindex", "hindex5y", "i10index", "i10index5y"):
+            for key in ("name", *METRIC_KEYS):
                 author_data[key] = page_data[key]
 
         page_publications = page_data["publications"]
@@ -176,6 +208,150 @@ def fetch_author(
             break
 
     return author_data
+
+
+def get_scholar_author_url(author_id: str) -> str:
+    return f"{SCHOLAR_URL}?hl=en&user={author_id}"
+
+
+def fetch_tavily_extract_content(
+    session: requests.Session,
+    url: str,
+    timeout_seconds: int,
+    api_key: str,
+) -> str:
+    response = session.post(
+        TAVILY_EXTRACT_URL,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "urls": url,
+            "extract_depth": "advanced",
+            "format": "markdown",
+            "timeout": min(max(timeout_seconds, 1), 60),
+        },
+        timeout=max(timeout_seconds + 10, 30),
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    results = payload.get("results", [])
+    if not results:
+        raise RuntimeError(f"Tavily did not return extracted content for {url}: {payload.get('failed_results', [])}")
+
+    raw_content = "\n".join(result.get("raw_content") or "" for result in results)
+    if not raw_content.strip():
+        raise RuntimeError(f"Tavily returned empty extracted content for {url}.")
+
+    return raw_content
+
+
+def get_text_window(raw_content: str, title: str, max_lines: int = 12) -> str:
+    normalized_title = normalize_text(title)
+    lines = [line.strip() for line in raw_content.splitlines() if line.strip()]
+
+    for index, line in enumerate(lines):
+        normalized_line = normalize_text(line)
+        if normalized_title and (
+            normalized_title in normalized_line
+            or (len(normalized_line) > 25 and normalized_line in normalized_title)
+        ):
+            return "\n".join(lines[index : index + max_lines])
+
+    normalized_content = normalize_text(raw_content)
+    position = normalized_content.find(normalized_title)
+    if position == -1:
+        return ""
+
+    return raw_content[max(0, position - 200) : position + len(title) + 800]
+
+
+def parse_citation_count_from_window(window: str) -> Optional[int]:
+    if not window:
+        return None
+
+    labeled_match = re.search(r"(?:cited\s+by|citations?)\D{0,12}(\d[\d,]*)", window, re.IGNORECASE)
+    if labeled_match:
+        return parse_int(labeled_match.group(1))
+
+    for line in window.splitlines()[1:8]:
+        cleaned_line = line.strip()
+        if re.search(r"\b(19|20)\d{2}\b", cleaned_line):
+            continue
+
+        number_match = re.fullmatch(r"(?:\[[^\]]*\]\([^)]*\)|\D)*(\d[\d,]*)(?:\D*)", cleaned_line)
+        if number_match:
+            value = parse_int(number_match.group(1))
+            if value < 1900 or value > datetime.now(timezone.utc).year + 1:
+                return value
+
+    return None
+
+
+def parse_tavily_publications(raw_content: str, expected_publications: Dict[str, Dict]) -> Dict:
+    publications = {}
+
+    for publication_id, expected_publication in expected_publications.items():
+        title = expected_publication.get("title", "")
+        windows = []
+
+        id_position = raw_content.find(publication_id)
+        if id_position != -1:
+            windows.append(raw_content[max(0, id_position - 500) : id_position + 800])
+
+        if title:
+            windows.append(get_text_window(raw_content, title))
+
+        for window in windows:
+            citation_count = parse_citation_count_from_window(window)
+            if citation_count is None:
+                continue
+
+            publications[publication_id] = {
+                "author_pub_id": publication_id,
+                "bib": {"title": title},
+                "num_citations": citation_count,
+                "source": "tavily",
+            }
+            break
+
+    return publications
+
+
+def parse_tavily_metrics(raw_content: str) -> Dict:
+    metrics = {key: 0 for key in METRIC_KEYS}
+
+    patterns = {
+        "citedby": r"\bCitations?\b\D{0,80}(\d[\d,]*)",
+        "hindex": r"\bh[- ]?index\b\D{0,80}(\d[\d,]*)",
+        "i10index": r"\bi10[- ]?index\b\D{0,80}(\d[\d,]*)",
+    }
+    for key, pattern in patterns.items():
+        match = re.search(pattern, raw_content, re.IGNORECASE)
+        if match:
+            metrics[key] = parse_int(match.group(1))
+
+    return metrics
+
+
+def fetch_author_with_tavily(
+    session: requests.Session,
+    author_id: str,
+    expected_publications: Dict[str, Dict],
+    timeout_seconds: int,
+    api_key: str,
+) -> Dict:
+    author_url = get_scholar_author_url(author_id)
+    raw_content = fetch_tavily_extract_content(session, author_url, timeout_seconds, api_key)
+    metrics = parse_tavily_metrics(raw_content)
+
+    return {
+        "name": "",
+        **metrics,
+        "publications": parse_tavily_publications(raw_content, expected_publications),
+    }
 
 
 def get_recent_metric(metric: Dict) -> int:
@@ -294,7 +470,7 @@ def fetch_author_with_serpapi(
 
         page_data = parse_serpapi_author_response(payload)
         if page_index == 0:
-            for key in ("name", "citedby", "citedby5y", "hindex", "hindex5y", "i10index", "i10index5y"):
+            for key in ("name", *METRIC_KEYS):
                 author_data[key] = page_data[key]
 
         page_publications = page_data["publications"]
@@ -321,7 +497,7 @@ def collect_author_data(
         author_data = fetch_author_data(author_id)
         fetched_authors[author_id] = {
             key: author_data[key]
-            for key in ("name", "citedby", "citedby5y", "hindex", "hindex5y", "i10index", "i10index5y")
+            for key in ("name", *METRIC_KEYS)
         }
         merged_publications.update(author_data["publications"])
         if primary_data is None:
@@ -336,12 +512,7 @@ def collect_author_data(
 
     return {
         "name": primary_data["name"],
-        "citedby": primary_data["citedby"],
-        "citedby5y": primary_data["citedby5y"],
-        "hindex": primary_data["hindex"],
-        "hindex5y": primary_data["hindex5y"],
-        "i10index": primary_data["i10index"],
-        "i10index5y": primary_data["i10index5y"],
+        **{key: primary_data[key] for key in METRIC_KEYS},
         "updated": datetime.now(timezone.utc).isoformat(),
         "authors": fetched_authors,
         "publications": merged_publications,
@@ -349,7 +520,24 @@ def collect_author_data(
     }
 
 
-def load_fallback_data(path_value: str, error: Exception) -> Optional[Dict]:
+def build_empty_output(author_ids: List[str], expected_publication_ids: Set[str]) -> Dict:
+    return {
+        "name": "",
+        **{key: 0 for key in METRIC_KEYS},
+        "updated": datetime.now(timezone.utc).isoformat(),
+        "authors": {
+            author_id: {
+                "name": "",
+                **{key: 0 for key in METRIC_KEYS},
+            }
+            for author_id in author_ids
+        },
+        "publications": {},
+        "missing_publications": sorted(expected_publication_ids),
+    }
+
+
+def load_fallback_data(path_value: str, error: Optional[Exception] = None) -> Optional[Dict]:
     if not path_value:
         return None
 
@@ -357,9 +545,90 @@ def load_fallback_data(path_value: str, error: Exception) -> Optional[Dict]:
     if not fallback_path.exists():
         return None
 
-    print(f"Warning: live citation fetch failed: {error}")
+    if error is not None:
+        print(f"Warning: live citation fetch failed: {error}")
     print(f"Warning: using previous citation data from {fallback_path}.")
     return json.loads(fallback_path.read_text(encoding="utf-8"))
+
+
+def load_previous_data(path_value: str) -> Optional[Dict]:
+    if not path_value:
+        return None
+
+    previous_path = Path(path_value)
+    if not previous_path.exists():
+        return None
+
+    return json.loads(previous_path.read_text(encoding="utf-8"))
+
+
+def merge_previous_data(output: Dict, previous_output: Optional[Dict]) -> Dict:
+    if not previous_output:
+        return output
+
+    merged = json.loads(json.dumps(previous_output))
+
+    if output.get("name"):
+        merged["name"] = output["name"]
+    for key in METRIC_KEYS:
+        if parse_int(output.get(key)) > 0:
+            merged[key] = output[key]
+
+    merged.setdefault("authors", {}).update(output.get("authors", {}))
+    merged.setdefault("publications", {})
+    for publication_id, publication in output.get("publications", {}).items():
+        merged["publications"][publication_id] = publication
+
+    merged["missing_publications"] = output.get("missing_publications", [])
+    merged["updated"] = output.get("updated", datetime.now(timezone.utc).isoformat())
+    return merged
+
+
+def load_citation_overrides(script_dir: Path) -> Dict:
+    overrides_path = script_dir / "citation_overrides.json"
+    if not overrides_path.exists():
+        return {}
+
+    return json.loads(overrides_path.read_text(encoding="utf-8"))
+
+
+def apply_citation_overrides(output: Dict, overrides: Dict) -> Dict:
+    if not overrides:
+        return output
+
+    for key in METRIC_KEYS:
+        if key in overrides.get("metrics", {}):
+            output[key] = parse_int(overrides["metrics"][key])
+
+    output.setdefault("publications", {})
+    for publication_id, override in overrides.get("publications", {}).items():
+        publication = output["publications"].setdefault(
+            publication_id,
+            {
+                "author_pub_id": publication_id,
+                "bib": {},
+                "num_citations": 0,
+            },
+        )
+
+        if "num_citations" in override:
+            publication["num_citations"] = max(
+                parse_int(publication.get("num_citations")),
+                parse_int(override["num_citations"]),
+            )
+        if override.get("bib"):
+            publication.setdefault("bib", {}).update(override["bib"])
+        publication["manual_override"] = True
+
+    overridden_ids = set(overrides.get("publications", {}))
+    output["missing_publications"] = [
+        publication_id
+        for publication_id in output.get("missing_publications", [])
+        if publication_id not in overridden_ids
+    ]
+    output["updated"] = datetime.now(timezone.utc).isoformat()
+    output["citation_overrides_updated"] = overrides.get("updated", "")
+    return output
 
 
 def write_results(script_dir: Path, output: Dict) -> None:
@@ -386,12 +655,16 @@ def write_results(script_dir: Path, output: Dict) -> None:
 def main() -> None:
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent
-    expected_publication_ids = get_expected_publication_ids(repo_root)
+    expected_publications = get_expected_publications(repo_root)
+    expected_publication_ids = set(expected_publications)
     primary_author_id = os.environ.get("GOOGLE_SCHOLAR_ID", "").strip()
     author_ids = get_author_ids(primary_author_id, expected_publication_ids)
     timeout_seconds = int(os.environ.get("GOOGLE_SCHOLAR_TIMEOUT", DEFAULT_TIMEOUT_SECONDS))
     max_pages = int(os.environ.get("GOOGLE_SCHOLAR_MAX_PAGES", DEFAULT_MAX_PAGES))
+    tavily_key = os.environ.get("TAVILY_API_KEY", "").strip()
     serpapi_key = os.environ.get("SERPAPI_API_KEY", "").strip()
+    live_fetch_enabled = parse_bool(os.environ.get("GOOGLE_SCHOLAR_LIVE_FETCH", ""), default=False)
+    previous_output = load_previous_data(os.environ.get("GOOGLE_SCHOLAR_FALLBACK_JSON", ""))
 
     session = requests.Session()
     session.headers.update(
@@ -407,7 +680,21 @@ def main() -> None:
     )
 
     try:
-        if serpapi_key:
+        if tavily_key:
+            print("Fetching citation data from Google Scholar via Tavily Extract.")
+            output = collect_author_data(
+                author_ids,
+                expected_publication_ids,
+                lambda author_id: fetch_author_with_tavily(
+                    session,
+                    author_id,
+                    expected_publications,
+                    timeout_seconds,
+                    tavily_key,
+                ),
+            )
+            output = merge_previous_data(output, previous_output)
+        elif serpapi_key:
             print("Fetching citation data via SerpApi.")
             output = collect_author_data(
                 author_ids,
@@ -421,6 +708,11 @@ def main() -> None:
                     serpapi_key,
                 ),
             )
+        elif not live_fetch_enabled:
+            print("Skipping direct Google Scholar fetch on GitHub Actions.")
+            output = previous_output
+            if output is None:
+                output = build_empty_output(author_ids, expected_publication_ids)
         else:
             print("Fetching citation data directly from Google Scholar.")
             output = collect_author_data(
@@ -439,10 +731,11 @@ def main() -> None:
         if output is None:
             raise RuntimeError(
                 "Failed to fetch live citation data and no previous gs_data.json fallback is available. "
-                "GitHub-hosted runners are often blocked by Google Scholar with HTTP 403; add SERPAPI_API_KEY "
+                "GitHub-hosted runners are often blocked by Google Scholar with HTTP 403; add TAVILY_API_KEY "
                 "or make sure the google-scholar-stats branch exists."
             ) from error
 
+    output = apply_citation_overrides(output, load_citation_overrides(script_dir))
     write_results(script_dir, output)
 
     print(json.dumps(output, ensure_ascii=False, indent=2))
