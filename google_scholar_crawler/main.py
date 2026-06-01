@@ -620,7 +620,47 @@ def apply_citation_overrides(output: Dict, overrides: Dict) -> Dict:
             publication.setdefault("bib", {}).update(override["bib"])
         publication["manual_override"] = True
 
-    overridden_ids = set(overrides.get("publications", {}))
+    for publication_id, override in overrides.get("google_scholar_fallback_citations", {}).items():
+        publication = output["publications"].setdefault(
+            publication_id,
+            {
+                "author_pub_id": publication_id,
+                "bib": {},
+                "num_citations": 0,
+            },
+        )
+
+        google_scholar_citations = max(
+            parse_int(publication.get("google_scholar_citations", publication.get("num_citations"))),
+            parse_int(override.get("num_citations")),
+        )
+        publication["google_scholar_citations"] = google_scholar_citations
+        publication["num_citations"] = google_scholar_citations
+
+    for publication_id, override in overrides.get("manual_extra_citations", {}).items():
+        publication = output["publications"].setdefault(
+            publication_id,
+            {
+                "author_pub_id": publication_id,
+                "bib": {},
+                "num_citations": 0,
+            },
+        )
+
+        google_scholar_citations = parse_int(
+            publication.get("google_scholar_citations", publication.get("num_citations"))
+        )
+        manual_extra_citations = parse_int(override.get("num_citations"))
+        publication["google_scholar_citations"] = google_scholar_citations
+        publication["manual_extra_citations"] = manual_extra_citations
+        publication["manual_extra_source"] = override.get("source", "manual")
+        publication["num_citations"] = google_scholar_citations + manual_extra_citations
+
+    overridden_ids = (
+        set(overrides.get("publications", {}))
+        | set(overrides.get("google_scholar_fallback_citations", {}))
+        | set(overrides.get("manual_extra_citations", {}))
+    )
     output["missing_publications"] = [
         publication_id
         for publication_id in output.get("missing_publications", [])
