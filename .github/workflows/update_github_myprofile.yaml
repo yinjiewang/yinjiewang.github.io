@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout site repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -53,6 +55,18 @@ jobs:
           token: ${{ secrets.GHRS_GITHUB_API_TOKEN }}
           path: github_profile_repo
           persist-credentials: false
+
+      - name: Verify profile repository push access
+        env:
+          GHRS_GITHUB_API_TOKEN: ${{ secrets.GHRS_GITHUB_API_TOKEN }}
+        run: |
+          cd github_profile_repo
+          git remote set-url origin "https://x-access-token:${GHRS_GITHUB_API_TOKEN}@github.com/yinjiewang/yinjiewang.git"
+          git ls-remote --exit-code origin main
+          if ! git push --dry-run origin HEAD:main; then
+            echo "::error::GHRS_GITHUB_API_TOKEN cannot push to yinjiewang/yinjiewang main. Create a new PAT owned by yinjiewang, select repository yinjiewang/yinjiewang, and grant Repository permissions > Contents: Read and write."
+            exit 1
+          fi
 
       - name: Update profile repository
         env:
